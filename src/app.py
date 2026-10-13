@@ -10,7 +10,7 @@ load_dotenv()
 
 EMBEDDING_MODEL = "nomic-embed-text"
 CHAT_MODEL = "qwen2.5:7b"
-MIN_SIMILARITY = 0.20
+MIN_SIMILARITY = 0.60
 MAX_HISTORY_MESSAGES = 12
 
 
@@ -58,6 +58,17 @@ def ensure_chat_tables():
                 """
                 ALTER TABLE chat_messages
                 ADD COLUMN IF NOT EXISTS used_notes BOOLEAN NOT NULL DEFAULT TRUE;
+                """
+            )
+
+            cursor.execute(
+                """
+                DELETE FROM chat_sessions
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM chat_messages
+                    WHERE chat_messages.session_id = chat_sessions.id
+                );
                 """
             )
 
@@ -148,27 +159,6 @@ def save_message(
                     Jsonb(sources) if sources else None,
                     used_notes,
                 ),
-            )
-
-        connection.commit()
-
-
-def update_session_title(session_id: int, first_question: str):
-    title = first_question.strip().replace("\n", " ")[:50]
-
-    if not title:
-        return
-
-    with get_connection() as connection:
-        with connection.cursor() as cursor:
-            cursor.execute(
-                """
-                UPDATE chat_sessions
-                SET title = %s
-                WHERE id = %s
-                    AND title = 'New chat';
-                """,
-                (title, session_id),
             )
 
         connection.commit()
@@ -362,9 +352,7 @@ with st.sidebar:
     st.divider()
 
     if st.button("New conversation", use_container_width=True):
-        new_session_id = create_session("New chat")
-
-        st.session_state.current_session_id = new_session_id
+        st.session_state.current_session_id = None
         st.session_state.messages = []
 
         st.rerun()
@@ -387,34 +375,27 @@ with st.sidebar:
             st.rerun()
 
 if st.session_state.current_session_id is None:
-    if sessions:
-        latest_session_id = sessions[0][0]
+    st.info("Start a new conversation by asking a question.")
+else:
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            st.write(message["content"])
 
-        st.session_state.current_session_id = latest_session_id
-        st.session_state.messages = load_messages(latest_session_id)
-    else:
-        new_session_id = create_session("New chat")
-
-        st.session_state.current_session_id = new_session_id
-        st.session_state.messages = []
-
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.write(message["content"])
-
-        if message["role"] == "assistant":
-            render_sources(message.get("sources", []))
+            if message["role"] == "assistant":
+                render_sources(message.get("sources", []))
 
 prompt = st.chat_input("Ask an interview-preparation question")
 
 if prompt:
+    if st.session_state.current_session_id is None:
+        new_title = prompt.strip().replace("\n", " ")[:50]
+
+        st.session_state.current_session_id = create_session(
+            new_title if new_title else "New conversation"
+        )
+
     current_session_id = st.session_state.current_session_id
     history_before_current_question = st.session_state.messages.copy()
-
-    update_session_title(
-        session_id=current_session_id,
-        first_question=prompt,
-    )
 
     user_message = {
         "role": "user",
